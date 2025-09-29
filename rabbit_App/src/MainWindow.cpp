@@ -61,7 +61,7 @@ void MainWindow::initMembers() {
 #ifdef _WIN32
   vlfd_device_detector_ = new fpga::WinVLFDDeviceDetector(this);
 #else
-  vlfd_device_detector_ = new fpga::LibusbVLFDDeviceDetector(this);
+  vlfd_device_detector_ = new fpga::VlfdHotplugDeviceDetector(this);
 #endif
   project_manager_ = new ProjectManager(this);
   panel_gui_update_controller_ = new PanelGuiUpdateController(this);
@@ -91,10 +91,11 @@ void MainWindow::initConnections() {
           this, &MainWindow::onDeviceRemoved);
 #else
   connect(vlfd_device_detector_,
-          &fpga::LibusbVLFDDeviceDetector::deviceDetected, this,
+          &fpga::VlfdHotplugDeviceDetector::deviceDetected, this,
           &MainWindow::onDeviceDetected);
-  connect(vlfd_device_detector_, &fpga::LibusbVLFDDeviceDetector::deviceRemoved,
-          this, &MainWindow::onDeviceRemoved);
+  connect(vlfd_device_detector_,
+          &fpga::VlfdHotplugDeviceDetector::deviceRemoved, this,
+          &MainWindow::onDeviceRemoved);
 #endif
 
   connect(vlfd_device_handler_,

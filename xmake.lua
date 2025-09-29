@@ -19,8 +19,6 @@ else
     add_cxxflags("-fPIC")
 end
 
-add_requires("libusb")
-
 -- Main application target
 target("rabbit_App")
     add_rules("qt.application")
@@ -40,13 +38,14 @@ target("rabbit_App")
     add_includedirs("vlfd-ffi")
     
     add_deps("TabToolbar")
-    add_packages("libusb")
-    
-    add_links("vlfd_ffi")
+      
+    add_linkgroups("vlfd_ffi", {static = true})
     add_linkdirs("vlfd-ffi/target/release")
     
     if is_plat("windows") then
         add_syslinks("userenv", "ntdll", "kernel32", "advapi32")
+    elseif is_plat("linux") then
+        add_syslinks("udev")
     end
 
     before_build(function (target)
