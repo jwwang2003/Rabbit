@@ -61,13 +61,15 @@ void MainWindow::initMembers() {
 #ifdef _WIN32
   vlfd_device_detector_ = new fpga::WinVLFDDeviceDetector(this);
 #else
-  vlfd_device_detector_ = new fpga::LibusbVLFDDeviceDetector(this);
+  vlfd_device_detector_ = new fpga::VlfdHotplugDeviceDetector(this);
 #endif
   project_manager_ = new ProjectManager(this);
   panel_gui_update_controller_ = new PanelGuiUpdateController(this);
   value_update_controller_ = new ValueUpdateController(components_panel_, this);
 
   project_manager_->setComponentsPanel(components_panel_);
+  waveform_controller_->setWaveformEnabled(
+      project_manager_->isWaveformEnabled());
 }
 
 void MainWindow::initLayout() {
@@ -89,10 +91,11 @@ void MainWindow::initConnections() {
           this, &MainWindow::onDeviceRemoved);
 #else
   connect(vlfd_device_detector_,
-          &fpga::LibusbVLFDDeviceDetector::deviceDetected, this,
+          &fpga::VlfdHotplugDeviceDetector::deviceDetected, this,
           &MainWindow::onDeviceDetected);
-  connect(vlfd_device_detector_, &fpga::LibusbVLFDDeviceDetector::deviceRemoved,
-          this, &MainWindow::onDeviceRemoved);
+  connect(vlfd_device_detector_,
+          &fpga::VlfdHotplugDeviceDetector::deviceRemoved, this,
+          &MainWindow::onDeviceRemoved);
 #endif
 
   connect(vlfd_device_handler_,
@@ -161,6 +164,8 @@ void MainWindow::initConnections() {
           &MainWindow::onProjectUnsaved);
   connect(project_manager_, &ProjectManager::portsLoaded, waveform_controller_,
           &waveform::WaveFormController::setPortsMap);
+  connect(project_manager_, &ProjectManager::waveformSettingChanged, this,
+          &MainWindow::onWaveformSettingChanged);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
@@ -264,6 +269,11 @@ void MainWindow::onWaveFormClicked() {
     QMessageBox::warning(this, tr("Waveform"),
                          tr("Please open a project before opening waveform."));
     return;
+  } else if (!project_manager_->isWaveformEnabled()) {
+    QMessageBox::information(this, tr("Waveform"),
+                             tr("Waveform generation is disabled. Enable it in "
+                                "Settings to view waveforms."));
+    return;
   }
   try {
     waveform_controller_->gtkWaveExec(project_manager_->getProjectPath());
@@ -328,5 +338,14 @@ void MainWindow::onProjectUnsaved(bool is_unsaved) {
     setWindowTitle(project_manager_->getProjectName() + "* - Rabbit");
   } else {
     setWindowTitle(project_manager_->getProjectName() + " - Rabbit");
+  }
+}
+
+void MainWindow::onWaveformSettingChanged(bool enabled) {
+  waveform_controller_->setWaveformEnabled(enabled);
+  if (status_bar_) {
+    auto message = enabled ? tr("Waveform generation enabled.")
+                           : tr("Waveform generation disabled.");
+    status_bar_->showMessage(message, 3000);
   }
 }

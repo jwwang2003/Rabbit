@@ -1,9 +1,11 @@
 #include <QApplication>
 #include <QDebug>
 #include <QMutex>
+#include <QString>
+
+#include <cstring>
 
 #include "FPGA/VLFDDeviceDetector.h"
-#include "libusb.h"
 
 using namespace rabbit_App::fpga;
 
@@ -84,84 +86,97 @@ void VLFDDeviceDetector::detectLeft(bool left) {
 }
 
 bool VLFDDeviceDetector::deviceExists() {
-  libusb_context *ctx = NULL;
-  if (LIBUSB_SUCCESS != libusb_init(&ctx)) {
+  VlfdDevice *device = vlfd_io_open();
+  if (device == nullptr) {
     return false;
   }
-  libusb_device **devs;
-  ssize_t cnt = libusb_get_device_list(ctx, &devs);
-  bool found = false;
-  for (ssize_t i = 0; i < cnt; i++) {
-    libusb_device_descriptor desc;
-    libusb_get_device_descriptor(devs[i], &desc);
-    if (desc.idVendor == kVendorID && desc.idProduct == kProductID) {
-      found = true;
-      break;
-    }
+
+  if (vlfd_io_close(device) != 0) {
+    const char *msg = vlfd_get_last_error_message();
+    qWarning() << "Failed to close VLFD device after probe:" << (msg ? msg : "");
   }
-  libusb_free_device_list(devs, 1);
-  libusb_exit(ctx);
-  return found;
+
+  return true;
 }
 
-LibusbVLFDDeviceDetector::LibusbVLFDDeviceDetector(QObject *parent)
-    : VLFDDeviceDetector(parent) {
-  context_ = NULL;
-  if (LIBUSB_SUCCESS != libusb_init(&context_)) {
-    throw(tr("Failed to initialize libusb"));
-  }
-  if (0 == libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
-    throw(tr("Hotplug capabilites are not supported on this platform"));
-  }
-  if (LIBUSB_SUCCESS != libusb_hotplug_register_callback(
-                            context_, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED,
-                            hotplug_flag, kVendorID, kProductID,
-                            LIBUSB_HOTPLUG_MATCH_ANY, arrivedCallback, this,
-                            &callback_handle[0])) {
-    throw(tr("Failed to register hotplug callback for device arrival"));
-  }
-  if (LIBUSB_SUCCESS != libusb_hotplug_register_callback(
-                            context_, LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT,
-                            hotplug_flag, kVendorID, kProductID,
-                            LIBUSB_HOTPLUG_MATCH_ANY, leftCallback, this,
-                            &callback_handle[1])) {
-    throw(tr("Failed to register hotplug callback for device removal"));
-  }
-}
+VlfdHotplugDeviceDetector::VlfdHotplugDeviceDetector(QObject *parent)
+    : VLFDDeviceDetector(parent), registration_(nullptr),
+      dispatch_events_(false) {}
 
-LibusbVLFDDeviceDetector::~LibusbVLFDDeviceDetector() {
-  libusb_hotplug_deregister_callback(context_, callback_handle[0]);
-  libusb_hotplug_deregister_callback(context_, callback_handle[1]);
-  libusb_exit(context_);
+VlfdHotplugDeviceDetector::~VlfdHotplugDeviceDetector() {
   stopDetect();
 }
 
-void LibusbVLFDDeviceDetector::onTimerTimeOut() {
-  timeval tv = {0, 0};
-  libusb_handle_events_timeout(NULL, &tv);
+void VlfdHotplugDeviceDetector::startDetect() {
+  if (registration_ == nullptr) {
+    VlfdHotplugOptions options = vlfd_hotplug_options_default();
+    options.filter_vendor_id = true;
+    options.vendor_id = kVendorID;
+    options.filter_product_id = true;
+    options.product_id = kProductID;
+    options.enumerate_existing = false;
+
+    registration_ = vlfd_hotplug_register(
+        &options, &VlfdHotplugDeviceDetector::hotplugCallback, this);
+    if (registration_ == nullptr) {
+      const char *msg = vlfd_get_last_error_message();
+      QString error = tr("Failed to register VLFD hotplug callback");
+      if (msg != nullptr && std::strlen(msg) > 0) {
+        error += tr(": %1").arg(QString::fromUtf8(msg));
+      }
+      throw(error);
+    }
+  }
+
+  VLFDDeviceDetector::startDetect();
+  dispatch_events_.store(true, std::memory_order_release);
 }
 
-int LibusbVLFDDeviceDetector::arrivedCallback(libusb_context *ctx,
-                                              libusb_device *dev,
-                                              libusb_hotplug_event event,
-                                              void *user_data) {
-  auto detector = static_cast<VLFDDeviceDetector *>(user_data);
-  libusb_device_descriptor *desc = new libusb_device_descriptor();
-  libusb_get_device_descriptor(dev, desc);
-  detector->detectArrived(event == LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED &&
-                          desc->idVendor == kVendorID &&
-                          desc->idProduct == kProductID);
-  delete desc;
-  return 0;
+void VlfdHotplugDeviceDetector::stopDetect() {
+  dispatch_events_.store(false, std::memory_order_release);
+
+  VLFDDeviceDetector::stopDetect();
+
+  if (registration_ != nullptr) {
+    if (vlfd_hotplug_unregister(registration_) != 0) {
+      const char *msg = vlfd_get_last_error_message();
+      qWarning() << "Failed to unregister VLFD hotplug callback:" << (msg ? msg : "");
+    }
+    registration_ = nullptr;
+  }
 }
 
-int LibusbVLFDDeviceDetector::leftCallback(libusb_context *ctx,
-                                           libusb_device *dev,
-                                           libusb_hotplug_event event,
-                                           void *user_data) {
-  auto detector = static_cast<VLFDDeviceDetector *>(user_data);
-  detector->detectLeft(event == LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT);
-  return 0;
+void VlfdHotplugDeviceDetector::onTimerTimeOut() {}
+
+void VlfdHotplugDeviceDetector::hotplugCallback(
+    void *user_data, const VlfdHotplugEvent *event) {
+  auto detector = static_cast<VlfdHotplugDeviceDetector *>(user_data);
+  if (detector == nullptr) {
+    return;
+  }
+  detector->handleHotplugEvent(event);
+}
+
+void VlfdHotplugDeviceDetector::handleHotplugEvent(
+    const VlfdHotplugEvent *event) {
+  if (event == nullptr) {
+    return;
+  }
+
+  if (!dispatch_events_.load(std::memory_order_acquire)) {
+    return;
+  }
+
+  switch (event->kind) {
+  case Arrived:
+    detectArrived(true);
+    break;
+  case Left:
+    detectLeft(true);
+    break;
+  default:
+    break;
+  }
 }
 
 #ifdef _WIN32

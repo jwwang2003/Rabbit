@@ -1,96 +1,70 @@
+-- Rabbit FPGA Development Tool - Xmake Build Configuration
+
+set_project("Rabbit")
+set_version("1.2.0")
+set_description("FPGA Development Tool with Component Library")
+
 add_rules("mode.debug", "mode.release")
 set_languages("c++17")
 
 includes("rabbit_App/3rdparty/TabToolbar")
+
+-- Platform-specific compiler flags
 if is_plat("windows") then
     add_cxxflags("/W3", "/utf-8", "/Zc:__cplusplus", "/EHsc")
     add_cxxflags("/D_CRT_SECURE_NO_WARNINGS")
+    add_defines("WIN32_LEAN_AND_MEAN", "NOMINMAX")
 else
     add_cxxflags("-Wall", "-Werror")
+    add_cxxflags("-fPIC")
 end
 
--- target("VLFDLibUSB")
---     set_kind("static")
---     add_files("VLFDLibUSBDriver/*.cpp")
---     add_includedirs("VLFDLibUSBDriver", {public = true})
---     add_includedirs("libusb/libusb")
---     add_links("usb-1.0")
---     add_linkdirs("build", "libusb/libusb/.libs")
-
--- target("rabbit_VLFD")
---     set_kind("static")
---     add_files("rabbit_VLFD/src/*.cpp")
---     add_includedirs("rabbit_VLFD/include", {public = true})
---     add_includedirs("libusb/libusb")
---     add_links("usb-1.0")
---     add_linkdirs("libusb/libusb/.libs")
---     add_deps("VLFDLibUSB")
-
+-- Main application target
 target("rabbit_App")
     add_rules("qt.application")
     set_kind("binary")
+    set_default(true)
+    
     add_defines("RABBIT_APP")
+    
     add_files("rabbit_App/src/**.cpp")
     add_files("rabbit_App/include/**.h")
     add_files("rabbit_App/res/*.qrc")
     add_files("rabbit_App/3rdparty/TabToolbar/src/TabToolbar/*.qrc")
+    
     add_frameworks("QtWidgets", "QtGui", "QtCore")
+    
     add_includedirs("rabbit_App/include")
-    add_includedirs("libusb/libusb")
-    add_includedirs("VLFDLibUSBDriver")
-    add_links("usb-1.0")
-    if is_plat("macosx") then
-        if is_arch("arm64") then
-            add_links("VLFDLibUSB-macos-arm64")
-        else
-            add_links("VLFDLibUSB-macos-x64")
-        end
-    elseif is_plat("windows") then
-        add_links("VLFDLibUSB-win-x64")
-    elseif is_plat("linux") then
-        add_links("VLFDLibUSB-linux-x64")
-    end
-    -- add_links("VLFDLibUSB")
-    add_linkdirs("libusb/libusb/.libs")
-    add_linkdirs("VLFDLibUSBDriver")
-    -- add_deps("rabbit_VLFD", "TabToolbar")
-    -- add_deps("VLFDLibUSB", "TabToolbar")
+    add_includedirs("vlfd-ffi")
+    
     add_deps("TabToolbar")
+      
+    add_linkgroups("vlfd_ffi", {static = true})
+    add_linkdirs("vlfd-ffi/target/release")
+    
+    if is_plat("windows") then
+        add_syslinks("userenv", "ntdll", "kernel32", "advapi32")
+    elseif is_plat("linux") then
+        add_syslinks("udev")
+    end
+
+    before_build(function (target)
+        print("[rabbit] before_build: build vlfd_ffi")
+        os.exec("cargo build --manifest-path vlfd-ffi/Cargo.toml --release")
+    end)
+    
     after_build(function (target)
-        if is_plat("macosx") then
-            -- print("macosx")
-            if is_arch("arm64") then
-                -- print("macosx-arm64")
-                if not os.isdir("$(buildir)/$(plat)/$(arch)/$(mode)/gtkwave.app") then
-                    -- print("macosx gtkwave")
-                    os.cp("gtkwave/osx-arm64/gtkwave.zip", "$(buildir)/$(plat)/$(arch)/$(mode)/")
-                    os.cd("$(buildir)/$(plat)/$(arch)/$(mode)/")
-                    os.exec("tar -xf gtkwave.zip")
-                    os.rm("gtkwave.zip")
-                end
-            else
-                if not os.isdir("$(buildir)/$(plat)/$(arch)/$(mode)/gtkwave.app") then
-                    -- print("macosx gtkwave")
-                    os.cp("gtkwave/osx-x64/gtkwave.zip", "$(buildir)/$(plat)/$(arch)/$(mode)/")
-                    os.cd("$(buildir)/$(plat)/$(arch)/$(mode)/")
-                    os.exec("tar -xf gtkwave.zip")
-                    os.rm("gtkwave.zip")
-                end
-            end
-        elseif is_plat("windows") then
-            if not os.isdir("$(buildir)/$(plat)/$(arch)/$(mode)/gtkwave") then
-                os.cp("gtkwave/win-x64/gtkwave.zip", "$(buildir)/$(plat)/$(arch)/$(mode)/")
-                os.cd("$(buildir)/$(plat)/$(arch)/$(mode)/")
-                os.exec("tar -xf gtkwave.zip")
-                os.rm("gtkwave.zip")
-            end
-        elseif is_plat("linux") then 
-            if not os.isdir("$(buildir)/$(plat)/$(arch)/$(mode)/gtkwave") then
-                os.cp("gtkwave/linux-x64/gtkwave.tar.gz", "$(buildir)/$(plat)/$(arch)/$(mode)/")
-                os.cd("$(buildir)/$(plat)/$(arch)/$(mode)/")
-                os.exec("tar -xf gtkwave.tar.gz")
-                os.rm("gtkwave.tar.gz")
-            end
+        local build_dir = "$(builddir)/$(plat)/$(arch)/$(mode)"
+        local gtkwave_dir = is_plat("macosx") and build_dir .. "/gtkwave.app" or build_dir .. "/gtkwave"
+        
+        if not os.isdir(gtkwave_dir) then
+            local archive = is_plat("macosx") and (is_arch("arm64") and "gtkwave/osx-arm64/gtkwave.zip" or "gtkwave/osx-x64/gtkwave.zip")
+                    or is_plat("windows") and "gtkwave/win-x64/gtkwave.zip"
+                    or "gtkwave/linux-x64/gtkwave.tar.gz"
+            
+            os.cp(archive, build_dir .. "/")
+            os.cd(build_dir)
+            os.exec("tar -xf " .. path.filename(archive))
+            os.rm(path.filename(archive))
         end
     end)
-

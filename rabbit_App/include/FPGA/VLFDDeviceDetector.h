@@ -5,8 +5,10 @@
 #include <QThread>
 #include <QTimer>
 
+#include <atomic>
+
+#include "FPGA/VLFDFFI.h"
 #include "ThreadTimer.h"
-#include "libusb.h"
 
 namespace rabbit_App::fpga {
 
@@ -19,7 +21,7 @@ const QString kDeviceName = "VLX2";
 /// To avoid the gui blocking, we use a worker to process the event.
 /// Because the libusb hotplug is not supported on Windows, so in windows
 /// platform, we use windows message to detect the connection.
-/// In other platform, we use libusb hotplug to detect the connection.
+/// On other platforms we rely on the vlfd-ffi hotplug API.
 class VLFDDeviceDetector : public QObject {
   Q_OBJECT
 
@@ -35,8 +37,8 @@ public:
   /// @brief The function called when the timer timeout.
   virtual void onTimerTimeOut() {}
 
-  void startDetect();
-  void stopDetect();
+  virtual void startDetect();
+  virtual void stopDetect();
 
   bool isConnected() const noexcept { return device_connected_; }
   void setConnected(bool connected) noexcept { device_connected_ = connected; }
@@ -66,33 +68,27 @@ protected:
 
 }; // class VLFDDeviceDetector
 
-class LibusbVLFDDeviceDetector : public VLFDDeviceDetector {
+class VlfdHotplugDeviceDetector : public VLFDDeviceDetector {
   Q_OBJECT
 
-  constexpr static int hotplug_flag = LIBUSB_HOTPLUG_ENUMERATE;
-
 public:
-  LibusbVLFDDeviceDetector(QObject *parent = nullptr);
-  ~LibusbVLFDDeviceDetector();
+  VlfdHotplugDeviceDetector(QObject *parent = nullptr);
+  ~VlfdHotplugDeviceDetector() override;
+
+  void startDetect() override;
+  void stopDetect() override;
 
   void onTimerTimeOut() override;
 
 private:
-  /// @brief The callback function called when the device arrived.
-  static int LIBUSB_CALL arrivedCallback(libusb_context *ctx,
-                                         libusb_device *dev,
-                                         libusb_hotplug_event event,
-                                         void *user_data);
-  /// @brief The callback function called when the device left.
-  static int LIBUSB_CALL leftCallback(libusb_context *ctx, libusb_device *dev,
-                                      libusb_hotplug_event event,
-                                      void *user_data);
+  static void hotplugCallback(void *user_data,
+                              const VlfdHotplugEvent *event);
+  void handleHotplugEvent(const VlfdHotplugEvent *event);
 
-private:
-  libusb_context *context_;
-  libusb_hotplug_callback_handle callback_handle[2];
+  VlfdHotplugRegistration *registration_;
+  std::atomic<bool> dispatch_events_;
 
-}; // class LibusbVLFDDeviceDetector
+}; // class VlfdHotplugDeviceDetector
 
 #ifdef _WIN32
 
